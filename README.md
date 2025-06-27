@@ -1,11 +1,3 @@
-Perfect, Sarab 👌 — here’s a clean, professional set of **delivery notes** you can include with the script.
-
----
-
-### 📄 `README-INSTALL.md` — LinkedIn Message Scraper (Delivery Notes)
-
----
-
 ## ✅ Overview
 
 This script automates the scraping of **unread LinkedIn messages**, groups all messages by the **latest visible timestamp**, and writes them into a CSV (`linkedin_messages.csv`).
