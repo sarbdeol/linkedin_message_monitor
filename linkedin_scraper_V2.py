@@ -1,10 +1,6 @@
 import time
 import subprocess
 import requests
-import os
-import csv
-import hashlib
-import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -14,13 +10,10 @@ from selenium.common.exceptions import NoSuchElementException, StaleElementRefer
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 USER_DATA_DIR = r"C:\chrome-profile"
 REMOTE_PORT = 9222
-CSV_FILE = "linkedin_messages.csv"
 CHECK_INTERVAL = 2  # seconds between checks
+BUFFER_TIMEOUT = 60  # seconds to wait before printing
 
-processed_messages = set()
-
-def generate_hash(sender, timestamp, message):
-    return hashlib.md5(f"{sender}-{timestamp}-{message}".encode()).hexdigest()
+message_buffer = {}
 
 def is_remote_debugging_running():
     try:
@@ -35,7 +28,7 @@ def launch_chrome():
     subprocess.Popen(cmd)
     time.sleep(5)
 
-# Chrome setup
+# Launch or attach to Chrome
 if not is_remote_debugging_running():
     launch_chrome()
     while not is_remote_debugging_running():
@@ -70,14 +63,24 @@ else:
 driver.get("https://www.linkedin.com/messaging/")
 time.sleep(5)
 
-# Prepare CSV
-try:
-    open(CSV_FILE, "x").write("Sender,Timestamp,Message\n")
-except FileExistsError:
-    pass
-
 while True:
     try:
+        # Flush any expired user message batches
+        current_time = time.time()
+        expired_users = []
+        for user, data in message_buffer.items():
+            if current_time - data['last_received_time'] >= BUFFER_TIMEOUT:
+                print({
+                    "Sender": user,
+                    "Timestamp": data["timestamp"],
+                    "Messages": data["messages"]
+                })
+                expired_users.append(user)
+
+        for user in expired_users:
+            del message_buffer[user]
+
+        # Get unread conversations
         unread_convos = driver.find_elements(By.XPATH, '//div[contains(@class, "msg-conversation-card__convo-item-container--unread")]')
         if unread_convos:
             print(f"Found {len(unread_convos)} unread chats.")
@@ -102,7 +105,7 @@ while True:
                 else:
                     latest_timestamp = "Unknown"
 
-                # Find the index of the last visible timestamp
+                # Find index of latest timestamp block
                 latest_index = -1
                 for i in range(len(message_blocks)):
                     try:
@@ -112,7 +115,6 @@ while True:
                     except NoSuchElementException:
                         continue
 
-                # Only collect messages from latest timestamp block onward
                 grouped_messages = []
                 for block in message_blocks[latest_index:]:
                     try:
@@ -121,35 +123,27 @@ while True:
                         except NoSuchElementException:
                             message_text = ""
                         grouped_messages.append(message_text)
-                    except Exception as e:
-                        print("Skipping message due to error:", e)
+                    except:
                         continue
 
                 if grouped_messages:
-                    full_message = "\n".join(grouped_messages).strip()
-                    msg_hash = generate_hash(chat_name, latest_timestamp, full_message)
-                    if msg_hash not in processed_messages:
-                        print(f"[NEW] {latest_timestamp} | {chat_name}:\n{full_message}\n")
-                        processed_messages.add(msg_hash)
+                    if chat_name not in message_buffer:
+                        message_buffer[chat_name] = {
+                            "timestamp": latest_timestamp,
+                            "messages": [],
+                            "last_received_time": current_time
+                        }
 
-                        # Overwrite or Append to CSV
-                        try:
-                            df = pd.read_csv(CSV_FILE)
-                        except FileNotFoundError:
-                            df = pd.DataFrame(columns=["Sender", "Timestamp", "Message"])
+                    existing = message_buffer[chat_name]["messages"]
 
-                        mask = (df["Sender"] == chat_name) & (df["Timestamp"] == latest_timestamp)
 
-                        if mask.any():
-                            df.loc[mask, "Message"] = full_message
-                        else:
-                            df = pd.concat([df, pd.DataFrame([{
-                                "Sender": chat_name,
-                                "Timestamp": latest_timestamp,
-                                "Message": full_message
-                            }])], ignore_index=True)
+                    # Append only unique new messages
+                    for msg in grouped_messages:
+                        if msg not in existing:
+                            existing.append(msg)
 
-                        df.to_csv(CSV_FILE, index=False, encoding="utf-8")
+                    # Update last received time
+                    message_buffer[chat_name]["last_received_time"] = current_time
 
                 # Optional: mark as read
                 try:
@@ -164,5 +158,5 @@ while True:
         time.sleep(CHECK_INTERVAL)
 
     except Exception as e:
-        print("Error:Please restart the script.")
+        print("Error: Please restart the script.")
         time.sleep(10)
